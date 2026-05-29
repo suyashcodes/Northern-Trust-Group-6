@@ -7,7 +7,7 @@ export class PaymentController {
    */
   async createOrder(req, res) {
     try {
-      const { amount, workflow_execution_id } = req.body;
+      const { amount, workflow_execution_id, task_execution_id } = req.body;
       if (!amount) {
         return res.status(400).json({
           success: false,
@@ -15,7 +15,7 @@ export class PaymentController {
         });
       }
 
-      const orderData = await paymentService.createOrder(amount, workflow_execution_id);
+      const orderData = await paymentService.createOrder(amount, workflow_execution_id, task_execution_id);
       return res.status(201).json({
         success: true,
         data: orderData,

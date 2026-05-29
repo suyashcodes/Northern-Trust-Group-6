@@ -66,7 +66,7 @@ def process_inventory_task(task_data: dict):
         # 1. Verify Stock Availability
         for item in items:
             sku = item["sku"]
-            qty = item["qty"]
+            qty = item.get("qty") or item.get("quantity", 1)
             
             cursor.execute(
                 "SELECT available_quantity FROM inventory_items WHERE sku = %s;",
@@ -87,7 +87,7 @@ def process_inventory_task(task_data: dict):
         if stock_available:
             for item in items:
                 sku = item["sku"]
-                qty = item["qty"]
+                qty = item.get("qty") or item.get("quantity", 1)
                 
                 # Update item stock inside transaction
                 cursor.execute(
@@ -129,12 +129,13 @@ def process_inventory_task(task_data: dict):
         # 3. Process Failure Path (Out of Stock)
         else:
             for item in items:
+                item_qty = item.get("qty") or item.get("quantity", 1)
                 cursor.execute(
                     """
                     INSERT INTO inventory_reservations (workflow_execution_id, order_id, sku, quantity, reservation_status, created_at)
                     VALUES (%s, %s, %s, %s, %s, %s);
                     """,
-                    (workflow_execution_id, order_id, item["sku"], item["qty"], 'FAILED', datetime.utcnow())
+                    (workflow_execution_id, order_id, item["sku"], item_qty, 'FAILED', datetime.utcnow())
                 )
                 
             conn.commit()

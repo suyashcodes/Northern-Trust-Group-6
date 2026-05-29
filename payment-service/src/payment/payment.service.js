@@ -2,13 +2,41 @@ import crypto from 'crypto';
 import { razorpayInstance, razorpayConfig } from '../config/razorpay.config.js';
 import { query } from '../config/database.js';
 
+const ORCHESTRATOR_CALLBACK_URL = process.env.ORCHESTRATOR_URL
+  ? `${process.env.ORCHESTRATOR_URL}/api/v1/tasks/callback`
+  : 'http://localhost:4000/api/v1/tasks/callback';
+
+/**
+ * Fire-and-forget callback to orchestrator so it can advance the workflow.
+ */
+async function sendOrchestratorCallback(task_execution_id, status, result, error) {
+  if (!task_execution_id) return;
+  try {
+    const body = { task_id: task_execution_id, status, result: result || null, error: error || null };
+    const resp = await fetch(ORCHESTRATOR_CALLBACK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      console.warn(`[Payment] Orchestrator callback returned ${resp.status}`);
+    } else {
+      console.log(`[Payment] Orchestrator callback sent → task=${task_execution_id} status=${status}`);
+    }
+  } catch (err) {
+    console.error('[Payment] Failed to send orchestrator callback:', err.message);
+  }
+}
+
 export class PaymentService {
   /**
-   * Creates a new Razorpay Order and saves it to the database.
-   * @param {number} amount - Amount in INR (e.g. 10000)
-   * @returns {Promise<object>} The created order details
+   * Creates a new Razorpay Order, saves it to the database, and
+   * calls the orchestrator callback so the workflow can advance.
+   * @param {number} amount - Amount in INR
+   * @param {string} workflow_execution_id - The workflow run ID
+   * @param {string} task_execution_id - The task execution ID for callback
    */
-  async createOrder(amount, workflow_execution_id = null) {
+  async createOrder(amount, workflow_execution_id = null, task_execution_id = null) {
     if (!amount || isNaN(amount) || amount <= 0) {
       throw new Error('Invalid amount provided. Amount must be a positive number.');
     }
@@ -24,45 +52,51 @@ export class PaymentService {
 
     try {
       const order = await razorpayInstance.orders.create(options);
-      
       const orderAmountINR = order.amount / 100;
 
-      // Store the initial order payment record in PostgreSQL
+      // Persist initial payment record
       try {
         await query(
-          `INSERT INTO payments (workflow_execution_id, order_id, amount, payment_status, payment_method) 
+          `INSERT INTO payments (workflow_execution_id, order_id, amount, payment_status, payment_method)
            VALUES ($1, $2, $3, $4, $5)`,
           [workflow_execution_id, order.id, orderAmountINR, 'PENDING', 'razorpay']
         );
-        console.log(`Inserted pending payment record for order_id: ${order.id} into database.`);
+        console.log(`[Payment] Inserted pending record for order_id: ${order.id}`);
       } catch (dbError) {
-        console.error('Failed to save order payment record to database:', dbError.message);
+        console.error('[Payment] Failed to save order record to database:', dbError.message);
       }
 
-      return {
+      const result = {
         id: order.id,
-        amount: orderAmountINR, // back to INR
+        amount: orderAmountINR,
         currency: order.currency,
         receipt: order.receipt,
         status: order.status,
-        keyId: razorpayConfig.keyId, // Return keyId for frontend configuration
+        keyId: razorpayConfig.keyId,
       };
+
+      // ── Notify orchestrator: payment task SUCCEEDED ─────────────────────
+      // Creating a Razorpay order = payment initiated successfully.
+      // The actual end-user payment collection happens via Razorpay checkout on the frontend.
+      // (Do NOT send SUCCESS callback automatically; wait for frontend Checkout/Verification to notify).
+
+      return result;
     } catch (error) {
-      console.error('Error creating Razorpay order:', error);
-      const errMsg = error.message || 
-                     error.description || 
-                     (error.error && error.error.description) || 
+      console.error('[Payment] Error creating Razorpay order:', error);
+      const errMsg = error.message ||
+                     error.description ||
+                     (error.error && error.error.description) ||
                      JSON.stringify(error);
+
+      // Notify orchestrator of failure so workflow can handle it
+      await sendOrchestratorCallback(task_execution_id, 'FAILED', null, { message: errMsg });
+
       throw new Error(`Razorpay Order Creation Failed: ${errMsg}`);
     }
   }
 
   /**
-   * Verifies the Razorpay payment signature and updates the status in the database.
-   * @param {string} orderId - The Razorpay Order ID
-   * @param {string} paymentId - The Razorpay Payment ID
-   * @param {string} signature - The Razorpay Signature
-   * @returns {Promise<boolean>} True if signature is valid, false otherwise
+   * Verifies the Razorpay payment signature and updates DB status.
    */
   async verifyPayment(orderId, paymentId, signature) {
     if (!orderId || !paymentId || !signature) {
@@ -82,30 +116,30 @@ export class PaymentService {
 
     const isValid = expectedSignature === signature;
 
-    // Update database status of the payment record
     try {
       if (isValid) {
         await query(
-          `UPDATE payments 
+          `UPDATE payments
            SET payment_transaction_id = $1, payment_status = $2, payment_method = $3
            WHERE order_id = $4`,
           [paymentId, 'COMPLETED', 'razorpay', orderId]
         );
-        console.log(`Updated payment status to COMPLETED for order_id: ${orderId} in database.`);
+        console.log(`[Payment] Updated payment COMPLETED for order_id: ${orderId}`);
       } else {
         await query(
-          `UPDATE payments 
+          `UPDATE payments
            SET payment_status = $1, failure_reason = $2
            WHERE order_id = $3`,
           ['FAILED', 'Signature verification failed', orderId]
         );
-        console.log(`Updated payment status to FAILED for order_id: ${orderId} in database.`);
+        console.log(`[Payment] Updated payment FAILED for order_id: ${orderId}`);
       }
     } catch (dbError) {
-      console.error('Failed to update payment status in database:', dbError.message);
+      console.error('[Payment] Failed to update payment status in database:', dbError.message);
     }
 
     return isValid;
   }
 }
+
 export const paymentService = new PaymentService();

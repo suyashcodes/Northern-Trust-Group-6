@@ -1,9 +1,11 @@
 
 fastapi
-uvicorn[standard]
+uvicorn
 httpx
 pyyaml
 pydantic
+sqlalchemy
+psycopg2-binary
 python-socketio
 psycopg2-binary
 redis
