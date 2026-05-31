@@ -10,6 +10,8 @@
  *  - Broadcast real-time updates via Socket.IO
  */
 
+require('dotenv').config();
+
 const express = require('express');
 const http = require('http');
 const { Server: SocketIO } = require('socket.io'); // optional — see try/catch below

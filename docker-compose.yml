@@ -81,6 +81,7 @@ services:
       - REDIS_PORT=6379
       - ORCHESTRATOR_URL=http://orchestrator:4000
       - PAYMENT_SERVICE_URL=http://payment-service:3001
+      - INVENTORY_SERVICE_URL=http://inventory-service
       - SHIPPING_SERVICE_URL=http://shipping-service:3002
       - NOTIFICATION_SERVICE_URL=http://notification-service:3004
       - APPROVAL_SERVICE_URL=http://approval-service:3005

@@ -46,7 +46,8 @@ async def execute_task(service_name: str, task_name: str, payload: dict) -> dict
             endpoint = "/api/v1/payment/order"
             payload_to_send = {
                 "amount": payload.get("amount") or 10000.0,
-                "workflow_execution_id": workflow_execution_id
+                "workflow_execution_id": workflow_execution_id,
+                "task_execution_id": task_execution_id
             }
         elif service_name == "shipping-service":
             endpoint = "/shipping/create-order"
@@ -120,7 +121,8 @@ async def execute_task(service_name: str, task_name: str, payload: dict) -> dict
             try:
                 body = {
                     "amount": amount,
-                    "workflow_execution_id": workflow_execution_id
+                    "workflow_execution_id": workflow_execution_id,
+                    "task_execution_id": task_execution_id
                 }
                 logger.info(f"POST {url} with body={body}")
                 resp = await client.post(url, json=body, timeout=10.0)

@@ -10,9 +10,10 @@ from enum import Enum
 from typing import Dict, List, Any, Optional, Callable
 import json
 
-from orchestrator.engine import DAG
-from orchestrator.task_executor import execute_task
-from orchestrator.state_manager import StateManager
+from engine import DAG
+from task_executor import execute_task
+from state_manager import StateManager
+import db
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -149,15 +150,9 @@ class DAGRunner:
         self.completed_at: Optional[str] = None
         self.stop_event = asyncio.Event()
 
-        # Neon DB Integration: Create Workflow Run record (in background thread)
-        _fire_db(StateManager.create_workflow_run, self.run_id, self.workflow_name)
-
         # Rich task tracking
         self.task_executions: Dict[str, TaskExecution] = {}
         for task_name, task_def in self.dag.tasks.items():
-            # Neon DB Integration: Create Task record
-            _fire_db(StateManager.create_task, self.run_id, task_name)
-            
             te = TaskExecution(task_name, task_def)
             te.input_payload = self._build_task_input(task_name)
             self.task_executions[task_name] = te
@@ -284,15 +279,16 @@ class DAGRunner:
         te.state = state
         if error:
             te.error = error
-            
-        # Neon DB Integration: Update Task Status
-        _fire_db(StateManager.update_task_status, self.run_id, task_name, state.value, error)
+        # Sync task state to DB
+        self._sync_task_to_db(te)
 
     def _update_workflow_state(self, state: WorkflowStatus, error: str = None):
         """Helper to update state in memory and Neon DB"""
         self.status = state
-        # Neon DB Integration: Update Workflow Status
-        _fire_db(StateManager.update_workflow_status, self.run_id, state.value, error)
+        try:
+            db.update_workflow_state(self.run_id, state.value, error)
+        except Exception as e:
+            logger.error(f"Error updating workflow state in DB: {e}")
 
     def _check_condition(self, task_exec: TaskExecution) -> bool:
         """Evaluate a task's condition against the workflow input."""
@@ -414,7 +410,7 @@ class DAGRunner:
             ht = HumanTask(te, self.run_id, self.workflow_name, self.input_payload)
             self.human_tasks[ht.id] = ht
             try:
-                db.save_human_task(ht.id, te.id, ht.status, workflow_execution_id=self.run_id, task_id=te.task_name)
+                db.save_human_task(ht.id, te.id, ht.status, workflow_execution_id=self.run_id, task_id=te.task_id)
             except Exception as db_e:
                 logger.error(f"Error saving human task to DB: {db_e}")
             self._emit_event("HUMAN_TASK_CREATED", {
@@ -475,6 +471,7 @@ class DAGRunner:
                 # For async/callback tasks, we keep the state IN_PROGRESS but do not complete the node yet.
                 te.result_payload = result.get("result", result)
                 self._sync_task_to_db(te)
+                self._notify_update()
                 logger.info(f"Task {task_name} is in progress (waiting for callback).")
             else:
                 error_msg = result.get("error", "Unknown error")
@@ -671,7 +668,7 @@ class DAGRunner:
             te.result_payload = {"approved": True, "decided_by": decided_by or "operator"}
             self._sync_task_to_db(te)
             try:
-                db.save_human_task(ht.id, te.id, ht.status, decided_by or "operator", workflow_execution_id=self.run_id, task_id=te.task_name)
+                db.save_human_task(ht.id, te.id, ht.status, decided_by or "operator", workflow_execution_id=self.run_id, task_id=te.task_id)
             except Exception as e:
                 logger.error(f"Error updating human task in DB: {e}")
             self._emit_event("HUMAN_TASK_APPROVED", {
@@ -685,7 +682,7 @@ class DAGRunner:
             te.result_payload = {"rejected": True, "reason": reason}
             self._sync_task_to_db(te)
             try:
-                db.save_human_task(ht.id, te.id, ht.status, reason or "Rejected by operator", workflow_execution_id=self.run_id, task_id=te.task_name)
+                db.save_human_task(ht.id, te.id, ht.status, reason or "Rejected by operator", workflow_execution_id=self.run_id, task_id=te.task_id)
             except Exception as e:
                 logger.error(f"Error updating human task in DB: {e}")
             self._emit_event("HUMAN_TASK_REJECTED", {
